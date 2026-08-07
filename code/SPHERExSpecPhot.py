@@ -287,7 +287,7 @@ def process_cutout_s3(row, position, size=11*u.pixel, keys=None, cache=False, ur
                     size=size,
                     wcs=spatial_wcs,
                     mode="partial",
-                    fill_value=np.nan
+                    fill_value=0.0
                 )
                 
                 hdu = fits.PrimaryHDU(data=cutout.data, header=hdul[key].header)

@@ -85,7 +85,7 @@ INPUT["aperture_radius"] = 3*u.pix
 ## SEARCH LVF IMAGES ===========
 lvf_results = ssp.search_lvfs(ra = INPUT["RA"],
                          dec = INPUT["DEC"],
-                         maxrec = 1000
+                         maxrec = 5000
                          )
 ```
 
@@ -106,13 +106,13 @@ lvf_results["central_wavelength"] = np.full(len(lvf_results), np.nan)
 lvf_results["bandwidth"] = np.full(len(lvf_results), np.nan)
 lvf_results["hdus"] = np.full(len(lvf_results), None)
 
-REPO = "IRSA" # IRSA | S3
+REPO = "IRSA" # IRSA | CLOUD
 
 ## get Cutouts (IRSA)
 if REPO == "IRSA":
     t1 = time.time()
     print("Creating cutouts (IRSA)...")
-    with concurrent.futures.ThreadPoolExecutor(max_workers=20) as executor:
+    with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
         futures = [
             executor.submit(
                 ssp.process_cutout_irsa,
