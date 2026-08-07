@@ -13,11 +13,11 @@ from astropy.wcs import WCS
 import astropy.units as u
 from astropy.coordinates import SkyCoord
 from astropy.nddata import Cutout2D
-from astropy.stats import sigma_clipped_stats, sigma_clip
+from astropy.stats import sigma_clipped_stats, sigma_clip, SigmaClip
 
 import pyvo
 
-from photutils.aperture import CircularAperture, aperture_photometry
+from photutils.aperture import CircularAperture, CircularAnnulus, aperture_photometry, ApertureStats
 
 import concurrent
 import multiprocess as mp
@@ -596,7 +596,7 @@ def measure_spherex_flux_helper(pars):
         than pixels.
     """
 
-    hdul, aperture_radius, flags_good = pars
+    hdul, aperture_radius, annulus_width, flags_good = pars
 
     # Allow scalars to be interpreted as pixels.
     if not isinstance(aperture_radius, u.Quantity):
@@ -611,8 +611,21 @@ def measure_spherex_flux_helper(pars):
         raise ValueError(
             "aperture_radius must have pixel units."
         )
+    if not isinstance(annulus_width, u.Quantity):
+        if np.isscalar(annulus_width):
+            annulus_width = annulus_width * u.pixel
+        else:
+            raise TypeError(
+                "annulus_width must be either a scalar (interpreted as pixels) "
+                "or an astropy.units.Quantity."
+            )
+    elif not annulus_width.unit.is_equivalent(u.pixel):
+        raise ValueError(
+            "annulus_width must have pixel units."
+        )
 
     aperture_radius_px = aperture_radius.to_value(u.pixel)
+    annulus_width_px = annulus_width.to_value(u.pixel)
 
     ## Load
     img = hdul["IMAGE"].data
@@ -628,6 +641,7 @@ def measure_spherex_flux_helper(pars):
     ## Measure aperture flux
     positions = [(img.shape[1] / 2, img.shape[0] / 2)]
 
+    ## Simple background estimate
     mean, median, stddev = sigma_clipped_stats(
         img,
         sigma=3,
@@ -635,18 +649,32 @@ def measure_spherex_flux_helper(pars):
         mask=np.isnan(img)
     )
 
+    ## Create aperture
     aperture = CircularAperture(
         positions,
         r=aperture_radius_px
     )
 
-    phot_table = aperture_photometry(
-        img - median,
-        aperture,
-        subpixels=10
-    )
+    ## Create annulus for background measurement:
+    annulus_aperture = CircularAnnulus(positions, r_in=aperture_radius_px, r_out=aperture_radius_px + annulus_width_px)
 
-    flux = phot_table["aperture_sum"][0]
+    ## Measure background in annulus
+    sigclip = SigmaClip(sigma=3.0, maxiters=10)
+    aperstats_bkg = ApertureStats(img , annulus_aperture, sigma_clip=sigclip)
+    bkg_mean = aperstats_bkg.median
+    #aperstats_bkg = ApertureStats(img , annulus_aperture)
+    #bkg_mean = aperstats_bkg.median
+
+    ## Measure photometry
+    phot_table = aperture_photometry(img, aperture, subpixels=10)
+    #aperstats = ApertureStats(img, aperture, subpixels=10, error=None, sigma_clip=None
+
+    ## Background subtraction from Annulus
+    aperture_area = aperture.area_overlap(img)
+    total_bkg = bkg_mean * aperture_area
+
+    #flux = phot_table["aperture_sum"][0]
+    flux = phot_table["aperture_sum"][0] - total_bkg
 
     ## Check Flags
     # return bad if a pixel within the extraction aperture
@@ -661,6 +689,7 @@ def measure_spherex_flux_helper(pars):
 def measure_spherex_flux(
     hduls,
     aperture_radius=3*u.pixel,
+    annulus_width=3*u.pixel,
     flags_good=None,
     n_processes=5,
     chunk_size=5,
@@ -682,6 +711,11 @@ def measure_spherex_flux(
         Aperture radius. A scalar is interpreted as pixels. If an
         Astropy quantity is provided, it must have pixel units
         (e.g., ``3*u.pixel``). Default is ``3*u.pixel``.
+
+    annulus_width : float or `~astropy.units.Quantity`, optional
+        Annulus width for background measurement. A scalar is interpreted as pixels.
+        If an Astropy quantity is provided, it must have pixel units
+        (e.g., ``2*u.pixel``). Default is ``2*u.pixel``.
 
     flags_good : sequence of str, optional
         Names of flags that are considered acceptable for photometry.
@@ -709,7 +743,7 @@ def measure_spherex_flux(
     instead and open the files inside the worker function.
     """
 
-    pars = [(hdul, aperture_radius, flags_good) for hdul in hduls]
+    pars = [(hdul, aperture_radius, annulus_width, flags_good) for hdul in hduls]
 
     with mp.Pool(processes=n_processes) as pool:
         results = list(
@@ -856,6 +890,7 @@ def bootstrap_median_std(X, num_bootstrap_samples=1000):
 
 def extract_spectrum(combined_hdul,
                      aperture_radius = 3*u.pixel,
+                     annulus_width = 2*u.pixel,
                      n_processes = 5,
                      chunk_size = 5,
                      lam_bins_width = 0.1*u.micrometer,
@@ -886,6 +921,11 @@ def extract_spectrum(combined_hdul,
         Aperture radius used for photometry. Scalars are interpreted as
         pixels. If a quantity is provided, it must have pixel units.
         Default is ``3*u.pixel``.
+
+    annulus_width : float or `~astropy.units.Quantity`, optional
+        Annulus width for background measurement. A scalar is interpreted as pixels.
+        If an Astropy quantity is provided, it must have pixel units
+        (e.g., ``2*u.pixel``). Default is ``2*u.pixel``.
     
     n_processes : int, optional
         Number of multiprocessing workers used for aperture photometry.
@@ -959,7 +999,7 @@ def extract_spectrum(combined_hdul,
 
     ## Measure Photometry
     lam = summary_table["central_wavelength"].to(u.micrometer)
-    flux, good_photo = measure_spherex_flux(HDULS , aperture_radius, flags_good, n_processes, chunk_size)
+    flux, good_photo = measure_spherex_flux(HDULS , aperture_radius, annulus_width, flags_good, n_processes, chunk_size)
 
     ## Bin Flux/Lambda (only good photometry)
     sel_good = np.where(good_photo)[0]

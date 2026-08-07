@@ -4,10 +4,10 @@ jupytext:
     extension: .md
     format_name: myst
     format_version: 0.13
-    jupytext_version: 1.18.1
+    jupytext_version: 1.19.5
 kernelspec:
   name: python3
-  display_name: Python 3 (ipykernel)
+  display_name: python3
   language: python
 ---
 
@@ -45,13 +45,14 @@ importlib.reload(ssp)
 INPUT = dict()
 
 ## Calibration Star
-INPUT["target_name"] = "2MASS 21282814-0559310"
-INPUT["RA"] = 322.117265*u.degree
-INPUT["DEC"] = -5.991964*u.degree
-INPUT["tmpdir"] = "../tmp/"
-INPUT["outdir"] = "../output/"
-INPUT["cutout_size"] = 11*u.pix
-INPUT["aperture_radius"] = 3*u.pix
+#INPUT["target_name"] = "2MASS 21282814-0559310"
+#INPUT["RA"] = 322.117265*u.degree
+#INPUT["DEC"] = -5.991964*u.degree
+#INPUT["tmpdir"] = "../tmp/"
+#INPUT["outdir"] = "../output/"
+#INPUT["cutout_size"] = 11*u.pix
+#INPUT["aperture_radius"] = 3*u.pix
+#INPUT["annulus_width"] = 3*u.pix
 
 ## Deep Field Source
 #INPUT["target_name"] = "DESI-39633458741381032"
@@ -61,6 +62,7 @@ INPUT["aperture_radius"] = 3*u.pix
 #INPUT["outdir"] = "../output/"
 #INPUT["cutout_size"] = 11*u.pixel
 #INPUT["aperture_radius"] = 3*u.pix
+#INPUT["annulus_width"] = 3*u.pix
 
 ## Galaxy
 #INPUT["target_name"] = "DESI-39633462931489543"
@@ -70,6 +72,7 @@ INPUT["aperture_radius"] = 3*u.pix
 #INPUT["outdir"] = "../output/"
 #INPUT["cutout_size"] = 11*u.pixel
 #INPUT["aperture_radius"] = 3*u.pix
+#INPUT["annulus_width"] = 3*u.pix
 
 ## Galaxy
 #INPUT["target_name"] = "DESI-39627409825203277"
@@ -79,6 +82,29 @@ INPUT["aperture_radius"] = 3*u.pix
 #INPUT["outdir"] = "../output/"
 #INPUT["cutout_size"] = 11*u.pixel
 #INPUT["aperture_radius"] = 3*u.pix
+#INPUT["annulus_width"] = 3*u.pix
+
+
+## M Star
+#INPUT["target_name"] = "DESI-39633458741380996"
+#INPUT["RA"] = 270.592172*u.degree
+#INPUT["DEC"] = -66.567353*u.degree
+#INPUT["tmpdir"] = "../tmp/"
+#INPUT["outdir"] = "../output/"
+#INPUT["cutout_size"] = 11*u.pix
+#INPUT["aperture_radius"] = 3*u.pix
+#INPUT["annulus_width"] = 3*u.pix
+
+
+## T3 Star
+INPUT["target_name"] = "PSO J247.3273+03.5932"
+INPUT["RA"] = 247.3283227*u.degree
+INPUT["DEC"] = 3.5925909*u.degree
+INPUT["tmpdir"] = "../tmp/"
+INPUT["outdir"] = "../output/"
+INPUT["cutout_size"] = 11*u.pix
+INPUT["aperture_radius"] = 2*u.pix
+INPUT["annulus_width"] = 3*u.pix
 ```
 
 ```{code-cell} ipython3
@@ -112,7 +138,7 @@ REPO = "IRSA" # IRSA | CLOUD
 if REPO == "IRSA":
     t1 = time.time()
     print("Creating cutouts (IRSA)...")
-    with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
+    with concurrent.futures.ThreadPoolExecutor(max_workers=20) as executor:
         futures = [
             executor.submit(
                 ssp.process_cutout_irsa,
@@ -177,6 +203,7 @@ combined_hdul = ssp.create_multiFITS(results_table=lvf_results,
 t1 = time.time()
 prim_cat, sec_cat = ssp.extract_spectrum(combined_hdul = combined_hdul,
                                          aperture_radius = INPUT["aperture_radius"],
+                                         annulus_width = INPUT["annulus_width"],
                                          lam_bins_width = 0.3 *u.micrometer,
                                          n_processes = 10, chunk_size = 5)
 print("Spectra extracted in {:2.2f} seconds.".format( time.time()-t1 ) )
@@ -187,8 +214,12 @@ print("Spectra extracted in {:2.2f} seconds.".format( time.time()-t1 ) )
 fig = plt.figure(figsize=(5,5))
 ax1 = fig.add_subplot(1,1,1)
 
+# sort table
+prim_cat.sort("lam_int")
+
 sel_good = np.where(prim_cat["good"])[0]
-ax1.plot(prim_cat["lam_int"][sel_good], prim_cat["flux_int"][sel_good], "o", markersize=1, label="Individual Data")
+ax1.plot(prim_cat["lam_int"][sel_good], prim_cat["flux_int"][sel_good], "o", markersize=1.5, color=plt.get_cmap("tab10")(0), label="Individual Data")
+ax1.plot(prim_cat["lam_int"][sel_good], prim_cat["flux_int"][sel_good], "-", linewidth=0.5, color=plt.get_cmap("tab10")(0), alpha=0.3)
 
 ax1.errorbar(sec_cat["lam_bin"], sec_cat["flux_bin"],
              xerr = 0, yerr = sec_cat["fluxerr_bin"],
@@ -200,7 +231,7 @@ ax1.errorbar(sec_cat["lam_bin"], sec_cat["flux_bin"],
 
 ylims = np.nanpercentile(prim_cat["flux_int"] , q=(2,97))
 
-ax1.legend(loc="upper right", fontsize=12)
+ax1.legend(loc="best", fontsize=12)
 ax1.set_title(INPUT["target_name"])
 ax1.set_xlim(0.6 , 5.1)
 ax1.set_ylim(ylims)
