@@ -43,20 +43,41 @@ importlib.reload(ssp)
 
 INPUT = dict()
 
-INPUT["target_name"] = "2MASS 21282814-0559310"
-INPUT["RA"] = 322.117265*u.degree
-INPUT["DEC"] = -5.991964*u.degree
-INPUT["tmpdir"] = "../tmp/"
-INPUT["outdir"] = "../output/"
-INPUT["cutout_size"] = 11*u.pix
-INPUT["aperture_radius"] = 3*u.pix
+## Calibration Star
+#INPUT["target_name"] = "2MASS 21282814-0559310"
+#INPUT["RA"] = 322.117265*u.degree
+#INPUT["DEC"] = -5.991964*u.degree
+#INPUT["tmpdir"] = "../tmp/"
+#INPUT["outdir"] = "../output/"
+#INPUT["cutout_size"] = 11*u.pix
+#INPUT["aperture_radius"] = 3*u.pix
 
+## Deep Field Source
 #INPUT["target_name"] = "DESI-39633458741381032"
 #INPUT["RA"] = 270.5991*u.degree
 #INPUT["DEC"] = 66.5608*u.degree
 #INPUT["tmpdir"] = "../tmp/"
 #INPUT["outdir"] = "../output/"
 #INPUT["cutout_size"] = 11*u.pixel
+#INPUT["aperture_radius"] = 3*u.pix
+
+## Galaxy
+#INPUT["target_name"] = "DESI-39633462931489543"
+#INPUT["RA"] = 180.149670*u.degree
+#INPUT["DEC"] = 67.093939*u.degree
+#INPUT["tmpdir"] = "../tmp/"
+#INPUT["outdir"] = "../output/"
+#INPUT["cutout_size"] = 11*u.pixel
+#INPUT["aperture_radius"] = 3*u.pix
+
+## Galaxy
+INPUT["target_name"] = "DESI-39627409825203277"
+INPUT["RA"] = 65.912846*u.degree
+INPUT["DEC"] = -15.718582*u.degree
+INPUT["tmpdir"] = "../tmp/"
+INPUT["outdir"] = "../output/"
+INPUT["cutout_size"] = 11*u.pixel
+INPUT["aperture_radius"] = 3*u.pix
 ```
 
 ```{code-cell} ipython3
@@ -166,11 +187,11 @@ ax1.errorbar(sec_cat["lam_bin"], sec_cat["flux_bin"],
             label="Binned Data")
 
 
-ylims = np.percentile(prim_cat["flux_int"] , q=(1,99))
+ylims = np.nanpercentile(prim_cat["flux_int"] , q=(2,97))
 
 ax1.legend(loc="upper right", fontsize=12)
 ax1.set_title(INPUT["target_name"])
-ax1.set_xlim(0.75 , 5.0)
+ax1.set_xlim(0.6 , 5.1)
 ax1.set_ylim(ylims)
 
 
