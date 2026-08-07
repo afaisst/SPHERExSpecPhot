@@ -25,8 +25,11 @@ import importlib
 import numpy as np
 
 import concurrent
+from functools import partial
+import fsspec
 
 import astropy.units as u
+from astropy.coordinates import SkyCoord
 
 import matplotlib.pyplot as plt
 
@@ -45,81 +48,93 @@ INPUT["RA"] = 322.117265*u.degree
 INPUT["DEC"] = -5.991964*u.degree
 INPUT["tmpdir"] = "../tmp/"
 INPUT["outdir"] = "../output/"
-INPUT["cutout_size"] = 11*u.pixel
+INPUT["cutout_size"] = 11*u.pix
+INPUT["aperture_radius"] = 3*u.pix
+
+#INPUT["target_name"] = "DESI-39633458741381032"
+#INPUT["RA"] = 270.5991*u.degree
+#INPUT["DEC"] = 66.5608*u.degree
+#INPUT["tmpdir"] = "../tmp/"
+#INPUT["outdir"] = "../output/"
+#INPUT["cutout_size"] = 11*u.pixel
 ```
 
 ```{code-cell} ipython3
 ## SEARCH LVF IMAGES ===========
 lvf_results = ssp.search_lvfs(ra = INPUT["RA"],
-                         dec = INPUT["DEC"]
+                         dec = INPUT["DEC"],
+                         maxrec = 1000
                          )
 ```
 
 ```{code-cell} ipython3
-## GET IRSA LINKS ========
-irsa_base = "https://irsa.ipac.caltech.edu/"
-lvf_results["irsa_uri"] = [os.path.join(irsa_base , t["uri"]) for t in lvf_results]
-
-## GET S3 BUCKET LINKS ==========
-bucket_name = "nasa-irsa-spherex"
-s3_access = f"s3://{bucket_name}"
-lvf_results["s3_access"] = [os.path.join(s3_access, "/".join(t["uri"].split("/")[3:])) for t in lvf_results]
+## GET LINKS FOR IRSA AND S3 CLOUD STORAGE ======
+lvf_results = ssp.get_links(lvf_results)
 ```
 
 ```{code-cell} ipython3
-## GET CUTOUTS FROM S3 (parallel) =============
-# we choose the S3 cloud cutout tool. Alternatively
-# once could choose the IRSA cutout tool (_process_cutout_irsa)
+## GET CUTOUTS FROM S3 or IRSA (parallel) =============
+# We have two options
+# 1. the S3 cloud
+# 2. directly download cutout from IRSA
+
 ## Prepare
 lvf_results["cutout_index"] = range(1, len(lvf_results) + 1)
 lvf_results["central_wavelength"] = np.full(len(lvf_results), np.nan)
 lvf_results["bandwidth"] = np.full(len(lvf_results), np.nan)
 lvf_results["hdus"] = np.full(len(lvf_results), None)
 
+REPO = "IRSA" # IRSA | S3
 
 ## get Cutouts (IRSA)
-'''t1 = time.time()
-print("Creating cutouts (IRSA)...")
-with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
-    futures = [
-        executor.submit(
-            ssp._process_cutout_irsa,
-            row=row,
-            ra=INPUT["RA"],
-            dec=INPUT["DEC"],
-            size=11*6.15*u.arcsec,
-            cache=False,
-            uri_key="irsa_uri",
-        )
-        for row in lvf_results[:5]
-    ]
-    concurrent.futures.wait(futures)
-print("Done - time to create cutouts in parallel mode: {:2.2f} minutes.".format( (time.time()-t1)/60 ) )'''
+if REPO == "IRSA":
+    t1 = time.time()
+    print("Creating cutouts (IRSA)...")
+    with concurrent.futures.ThreadPoolExecutor(max_workers=20) as executor:
+        futures = [
+            executor.submit(
+                ssp.process_cutout_irsa,
+                row=row,
+                position=SkyCoord(ra=INPUT["RA"], dec=INPUT["DEC"], frame="icrs"),
+                size=11*6.15*u.arcsec,
+                keys=['IMAGE','FLAGS','VARIANCE'],
+                cache=False,
+                NTRIES=15,
+                SLEEP=1.5,
+                uri_key="irsa_uri",
+            )
+            for row in lvf_results
+        ]
+        concurrent.futures.wait(futures)
+    print(f"Done (IRSA) - time to create {len(lvf_results)} cutouts in parallel mode:  {np.round((time.time()-t1)/60,2)} minutes (= {np.round(((time.time()-t1))/len(lvf_results),2)}s/image).")
+    print(f"Number of failed downloads: {len(np.where( lvf_results["hdus"] == None)[0])}")
+
 
 ## get Cutouts (S3)
-t1 = time.time()
-print("Creating cutouts (S3)...")
-with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
-    futures = [
-        executor.submit(
-            ssp._process_cutout_s3,
-            row=row,
-            ra=INPUT["RA"],
-            dec=INPUT["DEC"],
-            size=INPUT["cutout_size"],
-            cache=False,
-            uri_key="s3_access",
-        )
-        for row in lvf_results
-    ]
-    concurrent.futures.wait(futures)
-print("Done - time to create cutouts in parallel mode: {:2.2f} minutes (= {:2.2f}/image).".format( (time.time()-t1)/60, ((time.time()-t1)/60)/len(lvf_results) ) )
-
+if REPO == "CLOUD":
+    t1 = time.time()
+    print("Creating cutouts (S3)...")
+    with concurrent.futures.ThreadPoolExecutor(max_workers=20) as executor:
+        futures = [
+            executor.submit(
+                ssp.process_cutout_s3,
+                row=row,
+                position=SkyCoord(ra=INPUT["RA"], dec=INPUT["DEC"], frame="icrs"),
+                size=INPUT["cutout_size"],
+                keys=['IMAGE','FLAGS','VARIANCE'],
+                cache=False,
+                uri_key="s3_access",
+                fs=fsspec.filesystem("s3", anon=True),
+            )
+            for row in lvf_results
+        ]
+        concurrent.futures.wait(futures)
+    print(f"Done - time to create {len(lvf_results)} cutouts in parallel mode:  {np.round((time.time()-t1)/60,2)} minutes (= {np.round(((time.time()-t1))/len(lvf_results),2)}s/image).")
 ```
 
 ```{code-cell} ipython3
 ## CREATE MULTIEXTENSION FITS
-image_hdul = ssp.create_multiFITS(results_table=lvf_results, 
+combined_hdul = ssp.create_multiFITS(results_table=lvf_results, 
                 outdir = "../output/",
                 outname = "test",
                 savefits = False)
@@ -128,9 +143,10 @@ image_hdul = ssp.create_multiFITS(results_table=lvf_results,
 ```{code-cell} ipython3
 ## EXTRACT SPECTRUM FROM MULTIEXTENSION FITS
 t1 = time.time()
-prim_cat, sec_cat = ssp.extract_spectrum(combined_hdul = image_hdul,
-                                         lam_bins_width = 0.2 *u.micrometer,
-                                         n_processes = 5, chunk_size = 5)
+prim_cat, sec_cat = ssp.extract_spectrum(combined_hdul = combined_hdul,
+                                         aperture_radius = INPUT["aperture_radius"],
+                                         lam_bins_width = 0.3 *u.micrometer,
+                                         n_processes = 10, chunk_size = 5)
 print("Spectra extracted in {:2.2f} seconds.".format( time.time()-t1 ) )
 ```
 
@@ -139,18 +155,24 @@ print("Spectra extracted in {:2.2f} seconds.".format( time.time()-t1 ) )
 fig = plt.figure(figsize=(5,5))
 ax1 = fig.add_subplot(1,1,1)
 
-ax1.plot(prim_cat["lam_int"], prim_cat["flux_int"], "o", markersize=1)
+sel_good = np.where(prim_cat["good"])[0]
+ax1.plot(prim_cat["lam_int"][sel_good], prim_cat["flux_int"][sel_good], "o", markersize=1, label="Individual Data")
 
 ax1.errorbar(sec_cat["lam_bin"], sec_cat["flux_bin"],
              xerr = 0, yerr = sec_cat["fluxerr_bin"],
              fmt = "o",
              markersize = 1, capsize=2, markerfacecolor="black", capthick=0.5,
-            markeredgecolor="black", ecolor="black", elinewidth=0.5)
+            markeredgecolor="black", ecolor="black", elinewidth=0.5,
+            label="Binned Data")
 
 
+ylims = np.percentile(prim_cat["flux_int"] , q=(1,99))
+
+ax1.legend(loc="upper right", fontsize=12)
 ax1.set_title(INPUT["target_name"])
 ax1.set_xlim(0.75 , 5.0)
-ax1.set_ylim(0,200)
+ax1.set_ylim(ylims)
+
 
 ax1.set_xlabel(r"$\lambda_{\rm obs}$ ($\mu m$)")
 ax1.set_ylabel(r"Flux (mJy)")

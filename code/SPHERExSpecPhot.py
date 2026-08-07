@@ -1,6 +1,8 @@
 ## IMPORTS
 import os
 import time
+import posixpath
+from io import StringIO
 
 import numpy as np
 
@@ -26,7 +28,61 @@ import logging
 logging.getLogger('astropy').setLevel(logging.ERROR)
 
 ## FUNCTIONS
-def search_lvfs(ra, dec, IRSA_TAP_URL = "https://irsa.ipac.caltech.edu/TAP"):
+
+
+def get_links(results, irsa_base = "https://irsa.ipac.caltech.edu/", bucket_name = "nasa-irsa-spherex"):
+    """
+    Generate IRSA and Amazon S3 access links for SPHEREx data products.
+    
+    The function appends two columns to the input table containing URLs to
+    the IRSA archive and S3 URIs for direct access to the corresponding
+    SPHEREx FITS files.
+    
+    Parameters
+    ----------
+    results : `~astropy.table.Table`
+        Table containing a ``uri`` column with the archive-relative path to
+        each SPHEREx data product.
+    
+    irsa_base : str, optional
+        Base URL of the IRSA archive. Default is
+        ``"https://irsa.ipac.caltech.edu/"``.
+    
+    bucket_name : str, optional
+        Name of the Amazon S3 bucket containing the SPHEREx data products.
+        Default is ``"nasa-irsa-spherex"``.
+    
+    Returns
+    -------
+    `~astropy.table.Table`
+        The input table with two additional columns:
+    
+        - ``irsa_uri`` : Full IRSA URL for each data product.
+        - ``s3_access`` : Amazon S3 URI for direct access to each data
+          product.
+    
+    Notes
+    -----
+    The input table is modified in place and also returned for convenience.
+    """
+    
+    results["irsa_uri"] = [
+        posixpath.join(irsa_base, t["uri"])
+        for t in results
+    ]
+    
+    results["s3_access"] = [
+        posixpath.join(
+            f"s3://{bucket_name}",
+            "/".join(t["uri"].split("/")[3:])
+        )
+        for t in results
+    ]
+
+    return(results)
+
+
+def search_lvfs(ra, dec, IRSA_TAP_URL = "https://irsa.ipac.caltech.edu/TAP", maxrec = 5000):
 
     """
     Search the SPHEREx IRSA TAP service for Level-2 images covering a sky position.
@@ -41,6 +97,10 @@ def search_lvfs(ra, dec, IRSA_TAP_URL = "https://irsa.ipac.caltech.edu/TAP"):
     
     IRSA_TAP_URL : str, optional
         URL of the IRSA TAP service. Default is the public IRSA TAP endpoint.
+
+    maxrec : int, optional
+        Maximal number of records to query. Note that for deep fields the number
+        of records can be easily more than 10,000.
     
     Returns
     -------
@@ -61,7 +121,7 @@ def search_lvfs(ra, dec, IRSA_TAP_URL = "https://irsa.ipac.caltech.edu/TAP"):
     
     ## Run Query
     print("Querying IRSA TAP for L2 images…")
-    lvf_result = tap_search(adql, maxrec=5000, IRSA_TAP_URL=IRSA_TAP_URL)
+    lvf_result = tap_search(adql, maxrec=maxrec, IRSA_TAP_URL=IRSA_TAP_URL)
     lvf_results = lvf_result.to_table()
     print(f"Found {len(lvf_results)} L2 images covering RA = {ra.to_value(u.degree)}, Dec = {dec.to_value(u.degree)}")
     if lvf_result.query_status == "OVERFLOW":
@@ -114,157 +174,79 @@ def tap_search(adql, maxrec=None, retries=3, delay=5, IRSA_TAP_URL="https://irsa
                 raise
 
 
-def process_cutout(row, ra, dec, size=None,
-                   cache=False, uri_key="s3_uri", repo="S3"):
-
-    """
-    Retrieve a FITS image or cutout from a remote repository.
-    
-    This is a convenience wrapper that dispatches to the appropriate
-    processing function depending on the requested repository.
-    
-    Parameters
-    ----------
-    row : dict-like
-        A mutable table row (e.g., an ``astropy.table.Row``) that is updated
-        in place with the downloaded HDUs and associated metadata.
-    
-    ra : float or `~astropy.units.Quantity`
-        Right ascension (ICRS). If a scalar is provided, it is interpreted
-        as decimal degrees. If a `~astropy.units.Quantity` is provided, it
-        must have angular units.
-    
-    dec : float or `~astropy.units.Quantity`
-        Declination (ICRS). If a scalar is provided, it is interpreted
-        as decimal degrees. If a `~astropy.units.Quantity` is provided, it
-        must have angular units.
-    
-    size : int, float, or `~astropy.units.Quantity`, optional
-        Size of the requested cutout.
-    
-        - For ``repo="S3"``, a scalar is interpreted as pixels, while a
-          `~astropy.units.Quantity` may be specified in pixels or angular
-          units (e.g., ``11*u.pixel`` or ``30*u.arcsec``).
-        - For ``repo="IRSA"``, the size represents the angular size of the
-          requested cutout. A scalar is interpreted as decimal degrees,
-          while a `~astropy.units.Quantity` must have angular units.
-    
-        The default is ``None`` (functions will choose if not user defined).
-    
-    cache : bool, optional
-        Whether to cache the remote FITS file locally. Default is ``False``.
-    
-    uri_key : str, optional
-        Name of the column in ``row`` containing the URI or base URI used
-        to retrieve the FITS data. The interpretation depends on ``repo``.
-    
-    repo : {"S3", "IRSA"}, optional
-        Repository from which to retrieve the FITS data. ``"S3"`` accesses
-        cloud-hosted FITS files using Amazon S3, while ``"IRSA"`` retrieves
-        cutouts from the IRSA archive. Default is ``"S3"``.
-    
-    Returns
-    -------
-    bool
-        ``True`` if the retrieval and processing were successful,
-        ``False`` otherwise.
-    
-    Raises
-    ------
-    ValueError
-        If ``repo`` is not one of ``"S3"`` or ``"IRSA"``.
-    
-    Notes
-    -----
-    This function modifies ``row`` in place by adding the downloaded HDUs
-    and associated spectral metadata.
-    """
-
-    
-    if repo == "S3":
-        return _process_cutout_s3(
-            row=row, ra=ra, dec=dec,
-            size=size, cache=cache, uri_key=uri_key
-        )
-    elif repo == "IRSA":
-        return _process_cutout_irsa(
-            row=row, ra=ra, dec=dec,
-            size=size, cache=cache, uri_key=uri_key
-        )
-    else:
-        raise ValueError("repo must be either 'S3' or 'IRSA'.")
-
-
-
-
-def _process_cutout_s3(row, ra, dec, size=11*u.pixel, cache=False, uri_key="s3_uri"):
+def process_cutout_s3(row, position, size=11*u.pixel, keys=None, cache=False, uri_key="s3_uri",fs=None):
     """
     Download cutouts from a cloud-hosted FITS file and store them in a table row.
-
-    The function opens a FITS file stored in an S3 bucket using
-    ``astropy.io.fits`` with ``fsspec``, extracts a cutout centered on the
-    specified sky coordinates for the ``IMAGE``, ``FLAGS``, and ``VARIANCE``
-    extensions, and preserves the WCS in each cutout. It also computes the
-    central wavelength and spectral bandwidth at the requested position using
-    the spectral WCS.
-
+    
+    The function opens a FITS file stored in an S3 bucket, extracts cutouts
+    centered on a specified sky position from one or more image extensions,
+    preserves the celestial WCS in each cutout, and computes the central
+    wavelength and spectral bandwidth at the requested position using the
+    spectral WCS.
+    
     Parameters
     ----------
     row : dict-like
         A mutable table row (e.g., an ``astropy.table.Row``) that is updated
         in place. The following fields are added:
-
-        - ``"hdus"`` : list of FITS HDUs containing the cutouts.
+    
+        - ``"hdus"`` : list of FITS HDUs containing the extracted cutouts.
         - ``"central_wavelength"`` : Central wavelength in microns.
         - ``"bandwidth"`` : Spectral bandwidth in microns.
-
-    ra : float or `~astropy.units.Quantity`
-        Right ascension of the cutout center (ICRS). If a scalar is
-        provided, it is interpreted as decimal degrees. If a
-        `~astropy.units.Quantity` is provided, it must have angular units.
-
-    dec : float or `~astropy.units.Quantity`
-        Declination of the cutout center (ICRS). If a scalar is
-        provided, it is interpreted as decimal degrees. If a
-        `~astropy.units.Quantity` is provided, it must have angular units.
-
+    
+    position : `~astropy.coordinates.SkyCoord`
+        Sky position of the cutout center.
+    
     size : int, float, or `~astropy.units.Quantity`, optional
-        Size of the cutout. If a scalar is provided, it is interpreted
-        as a size in pixels. Alternatively, an
+        Size of the cutout. If a scalar is provided, it is interpreted as a
+        size in pixels. Alternatively, an
         `~astropy.units.Quantity` may be supplied (e.g.,
-        ``11*u.pixel`` or ``30*u.arcsec``). The default is
-        ``11*u.pixel``.
-
+        ``11 * u.pixel`` or ``30 * u.arcsec``). Default is
+        ``11 * u.pixel``.
+    
+    keys : str or sequence of str, optional
+        FITS extension names from which cutouts will be extracted. The
+        sequence must include ``"IMAGE"``, which is also used to determine
+        the spatial and spectral WCS. Default is
+        ``["IMAGE", "FLAGS", "VARIANCE"]``.
+    
     cache : bool, optional
         Whether to cache the remote FITS file locally. Passed to
         ``astropy.io.fits.open``. Default is ``False``.
-
+    
     uri_key : str, optional
-        Name of the column in ``row`` containing the S3 URI of the FITS file.
+        Name of the column in ``row`` containing the URI of the FITS file.
         Default is ``"s3_uri"``.
-
+    
+    fs : fsspec.spec.AbstractFileSystem, optional
+        Filesystem object used to open the FITS file. If ``None``, a default
+        anonymous S3 filesystem will be used:
+          fs = fsspec.filesystem("s3", anon=True)
+        Note that defining the filesystem *outside* of the function, makes
+        it run faster in loops (like in the case of multi processing).
+    
     Returns
     -------
     bool
         Returns ``True`` if the cutout and metadata were successfully
         generated.
-
+    
     Raises
     ------
     TypeError
         If ``size`` is neither a scalar nor an
-        `~astropy.units.Quantity`, or if ``ra`` or ``dec`` are neither
-        scalars nor `~astropy.units.Quantity` objects.
-
-    ValueError
-        If ``ra`` or ``dec`` are given as
-        `~astropy.units.Quantity` objects that do not have angular units.
-
+        `~astropy.units.Quantity`.
+    
+    KeyError
+        If ``"IMAGE"`` is not included in ``keys``.
+    
     Notes
     -----
     This function modifies ``row`` in place. The FITS file is expected to
-    contain ``IMAGE``, ``FLAGS``, and ``VARIANCE`` extensions, as well as a
-    valid spectral WCS under the ``"W"`` coordinate key.
+    contain an ``"IMAGE"`` extension with a valid celestial WCS and a valid
+    spectral WCS under the ``"W"`` coordinate key. Additional extensions
+    listed in ``keys`` are extracted using the same spatial WCS as the
+    ``"IMAGE"`` extension.
     """
 
     # Allow a scalar to be interpreted as pixels.
@@ -277,68 +259,56 @@ def _process_cutout_s3(row, ra, dec, size=11*u.pixel, cache=False, uri_key="s3_u
                 "or an astropy.units.Quantity."
             )
 
-    # Allow scalars to be interpreted as degrees.
-    if not isinstance(ra, u.Quantity):
-        if np.isscalar(ra):
-            ra = ra * u.deg
-        else:
-            raise TypeError(
-                "ra must be either a scalar (interpreted as degrees) "
-                "or an astropy.units.Quantity."
-            )
-    elif not ra.unit.is_equivalent(u.deg):
-        raise ValueError("ra must have angular units.")
-
-    if not isinstance(dec, u.Quantity):
-        if np.isscalar(dec):
-            dec = dec * u.deg
-        else:
-            raise TypeError(
-                "dec must be either a scalar (interpreted as degrees) "
-                "or an astropy.units.Quantity."
-            )
-    elif not dec.unit.is_equivalent(u.deg):
-        raise ValueError("dec must have angular units.")
-
-    position = SkyCoord(ra=ra, dec=dec, frame="icrs")
-
     uri = row[uri_key]
 
-    with fits.open(uri, fsspec_kwargs={"anon": True}, cache=cache) as hdul:
-
+    # Check if image is in keys:
+    if keys is None:
         keys = ["IMAGE", "FLAGS", "VARIANCE"]
+    if 'IMAGE' not in keys:
+        raise KeyError(
+            "`IMAGE` must be included in the keys"
+        )
 
-        hdus = []
-        for key in keys:
-            cutout = Cutout2D(
-                hdul[key].section,
-                position=position,
-                size=size,
-                wcs=WCS(hdul[key].header),
-                mode="partial"
-            )
+    # Check if file system is set.
+    if fs is None:
+        fs = fsspec.filesystem("s3", anon=True)
 
-            hdu = fits.PrimaryHDU(data=cutout.data, header=hdul[key].header)
-            hdu.header.update(cutout.wcs.to_header())
-            hdu.header["EXTNAME"] = f"{hdu.header['EXTNAME']}{row['cutout_index']}"
-            hdus.append(hdu)
-
-        row["hdus"] = hdus
-
-        spatial_wcs = WCS(hdul["IMAGE"].header)
-        x, y = spatial_wcs.world_to_pixel(position)
-
-        spectral_wcs = WCS(hdul["IMAGE"].header, fobj=hdul, key="W")
-        spectral_wcs.sip = None
-        wavelength, bandpass = spectral_wcs.pixel_to_world(x, y)
-
-        row["central_wavelength"] = wavelength.to(u.um).value
-        row["bandwidth"] = bandpass.to(u.um).value
+    with fs.open(uri) as f:
+        with fits.open(f, cache=cache) as hdul:
+    
+            spatial_wcs = WCS(hdul['IMAGE'].header)
+            hdus = []
+            
+            for key in keys:
+                cutout = Cutout2D(
+                    hdul[key].section,
+                    position=position,
+                    size=size,
+                    wcs=spatial_wcs,
+                    mode="partial",
+                    fill_value=np.nan
+                )
+                
+                hdu = fits.PrimaryHDU(data=cutout.data, header=hdul[key].header)
+                hdu.header.update(cutout.wcs.to_header())
+                hdu.header["EXTNAME"] = f"{hdu.header['EXTNAME']}{row['cutout_index']}"
+                hdus.append(hdu)
+    
+            row["hdus"] = hdus
+    
+            x, y = spatial_wcs.world_to_pixel(position)
+    
+            spectral_wcs = WCS(hdul["IMAGE"].header, fobj=hdul, key="W")
+            spectral_wcs.sip = None
+            wavelength, bandpass = spectral_wcs.pixel_to_world(x, y)
+    
+            row["central_wavelength"] = wavelength.to(u.um).value
+            row["bandwidth"] = bandpass.to(u.um).value
 
     return(True)
 
 
-def _process_cutout_irsa(row, ra, dec, size=60*u.arcsec, cache=False, uri_key="irsa_uri"):
+def process_cutout_irsa(row, position, size=60*u.arcsec, keys=None, NTRIES=5, SLEEP=2, cache=False, uri_key="irsa_uri"):
     """
     Download a FITS cutout from the IRSA archive and store it in a table row.
 
@@ -358,21 +328,28 @@ def _process_cutout_irsa(row, ra, dec, size=60*u.arcsec, cache=False, uri_key="i
         - ``"central_wavelength"`` : Central wavelength in microns.
         - ``"bandwidth"`` : Spectral bandwidth in microns.
 
-    ra : float or `~astropy.units.Quantity`
-        Right ascension (ICRS). If a scalar is provided, it is interpreted
-        as decimal degrees. If a `~astropy.units.Quantity` is provided, it
-        must have angular units.
-
-    dec : float or `~astropy.units.Quantity`
-        Declination (ICRS). If a scalar is provided, it is interpreted
-        as decimal degrees. If a `~astropy.units.Quantity` is provided, it
-        must have angular units.
+    position : `~astropy.coordinates.SkyCoord`
+        Sky position of the cutout center.
 
     size : float or `~astropy.units.Quantity`, optional
         Angular size of the requested cutout. If a scalar is provided,
         it is interpreted as decimal degrees. If a
         `~astropy.units.Quantity` is provided, it must have angular
         units. The default is ``60*u.arcsec``.
+
+    keys : str or sequence of str, optional
+        FITS extension names from which cutouts will be extracted. The
+        sequence must include ``"IMAGE"``, which is also used to determine
+        the spatial and spectral WCS. Default is
+        ``["IMAGE", "FLAGS", "VARIANCE"]``.
+
+    NTRIES : int
+        Number of tries in case the connection/download fails until it gives
+        up. Specifically, it tries NTRIES time with a 1s pause between
+        each try.
+
+    SLEEP : int
+        Timeout between the tries (NTRIES).
 
     cache : bool, optional
         Whether to cache the remote FITS file locally. Passed to
@@ -392,12 +369,11 @@ def _process_cutout_irsa(row, ra, dec, size=60*u.arcsec, cache=False, uri_key="i
     Raises
     ------
     TypeError
-        If ``ra``, ``dec``, or ``size`` are neither scalars nor
-        `~astropy.units.Quantity` objects.
+        If ``size`` is neither a scalar nor an
+        `~astropy.units.Quantity`.
     
-    ValueError
-        If ``ra``, ``dec``, or ``size`` are given as
-        `~astropy.units.Quantity` objects that do not have angular units.
+    KeyError
+        If ``"IMAGE"`` is not included in ``keys``.
 
     Notes
     -----
@@ -419,74 +395,60 @@ def _process_cutout_irsa(row, ra, dec, size=60*u.arcsec, cache=False, uri_key="i
     elif not size.unit.is_equivalent(u.deg):
         raise ValueError("size must have angular units.")
     
-    # Allow scalars to be interpreted as degrees.
-    if not isinstance(ra, u.Quantity):
-        if np.isscalar(ra):
-            ra = ra * u.deg
-        else:
-            raise TypeError(
-                "ra must be either a scalar (interpreted as degrees) "
-                "or an astropy.units.Quantity."
-            )
-    elif not ra.unit.is_equivalent(u.deg):
-        raise ValueError("ra must have angular units.")
-
-    if not isinstance(dec, u.Quantity):
-        if np.isscalar(dec):
-            dec = dec * u.deg
-        else:
-            raise TypeError(
-                "dec must be either a scalar (interpreted as degrees) "
-                "or an astropy.units.Quantity."
-            )
-    elif not dec.unit.is_equivalent(u.deg):
-        raise ValueError("dec must have angular units.")
-
-
-    position = SkyCoord(ra=ra, dec=dec, frame="icrs")
 
     # construct the URI
     # Note: from IRSA we can directly download the cutouts! 
     uri = row[uri_key]
 
-    #uri = f"{uri}?center={ra.to(u.degree).value},{dec.to(u.degree).value}d&size={size.to(u.degree).value}"
+    # Check if image is in keys:
+    if keys is None:
+        keys = ["IMAGE", "FLAGS", "VARIANCE"]
+    if 'IMAGE' not in keys:
+        raise KeyError(
+            "`IMAGE` must be included in the keys"
+        )
+
     uri = (
         f"{uri}"
-        f"?center={ra.to_value(u.deg)},{dec.to_value(u.deg)}d"
+        f"?center={position.ra.degree},{position.dec.degree}d"
         f"&size={size.to_value(u.deg)}d"
     )
 
     # Note that some cutouts may not have an overlap. In this case
     # we just skip the row and leave the default values. We can filter
     # out later the images that couldn't be retrieved.
-    try:
-        with fits.open(uri, cache=cache) as hdul:
-    
-            keys = ["IMAGE", "FLAGS", "VARIANCE","WCS-WAVE"]
-    
-            hdus = []
-            for key in keys:
-                hdu = fits.PrimaryHDU(data=hdul[key].data, header=hdul[key].header)
-                hdu.header["EXTNAME"] = f"{hdu.header['EXTNAME']}{row['cutout_index']}"
-                hdus.append(hdu)
-    
-            row["hdus"] = hdus
-    
-            spatial_wcs = WCS(hdul["IMAGE"].header)
-            x, y = spatial_wcs.world_to_pixel(position)
-    
-            spectral_wcs = WCS(hdul["IMAGE"].header, fobj=hdul, key="W")
-            spectral_wcs.sip = None
-            wavelength, bandpass = spectral_wcs.pixel_to_world(x, y)
-    
-            row["central_wavelength"] = wavelength.to(u.um).value
-            row["bandwidth"] = bandpass.to(u.um).value
-
-        return(True)
+    c = 0
+    while(c < NTRIES):
+        try:
+            with fits.open(uri, cache=cache) as hdul:    
+                hdus = []
+                
+                for key in keys:
+                    hdu = fits.PrimaryHDU(data=hdul[key].data, header=hdul[key].header)
+                    hdu.header["EXTNAME"] = f"{hdu.header['EXTNAME']}{row['cutout_index']}"
+                    hdus.append(hdu)
         
-    except Exception as e:
-        print(f"Failed to process {uri}: {e}")
-        return(False)
+                row["hdus"] = hdus
+        
+                spatial_wcs = WCS(hdul["IMAGE"].header)
+                x, y = spatial_wcs.world_to_pixel(position)
+        
+                spectral_wcs = WCS(hdul["IMAGE"].header, fobj=hdul, key="W")
+                spectral_wcs.sip = None
+                wavelength, bandpass = spectral_wcs.pixel_to_world(x, y)
+        
+                row["central_wavelength"] = wavelength.to(u.um).value
+                row["bandwidth"] = bandpass.to(u.um).value
+    
+            return(True)
+            
+        except Exception as e:
+            time.sleep(SLEEP)
+            c += 1
+            
+
+    print(f"Failed to process {uri}: {e}")
+    return(False)
 
 
 def create_multiFITS(results_table, outdir=None, outname=None, savefits=False):
@@ -612,6 +574,10 @@ def measure_spherex_flux_helper(pars):
           Aperture radius. A scalar is interpreted as pixels. If an
           Astropy quantity is provided, it must have pixel units
           (e.g., ``3*u.pixel``).
+        - ``flags_good`` (sequence of str, optional
+        Names of flags that are considered acceptable for photometry.
+        Any flag not included in this list will cause the aperture to be
+        rejected. Default is ``["SOURCE", "FULLSAMPLE"]``).
 
     Returns
     -------
@@ -629,7 +595,7 @@ def measure_spherex_flux_helper(pars):
         than pixels.
     """
 
-    hdul, aperture_radius = pars
+    hdul, aperture_radius, flags_good = pars
 
     # Allow scalars to be interpreted as pixels.
     if not isinstance(aperture_radius, u.Quantity):
@@ -649,6 +615,7 @@ def measure_spherex_flux_helper(pars):
 
     ## Load
     img = hdul["IMAGE"].data
+    flag_image = hdul["FLAGS"].data
 
     ## Convert flux MJy/sr to mJy/px
     img = mjsr_to_jypixel(
@@ -680,11 +647,20 @@ def measure_spherex_flux_helper(pars):
 
     flux = phot_table["aperture_sum"][0]
 
-    return flux
+    ## Check Flags
+    # return bad if a pixel within the extraction aperture
+    # is bad:
+    good_photo = check_flags(flag_image ,
+                             size = aperture_radius,
+                             flags_good = flags_good
+                            )
+
+    return flux, good_photo
 
 def measure_spherex_flux(
     hduls,
     aperture_radius=3*u.pixel,
+    flags_good=None,
     n_processes=5,
     chunk_size=5,
 ):
@@ -705,6 +681,11 @@ def measure_spherex_flux(
         Aperture radius. A scalar is interpreted as pixels. If an
         Astropy quantity is provided, it must have pixel units
         (e.g., ``3*u.pixel``). Default is ``3*u.pixel``.
+
+    flags_good : sequence of str, optional
+        Names of flags that are considered acceptable for photometry.
+        Any flag not included in this list will cause the aperture to be
+        rejected. Default is ``["SOURCE", "FULLSAMPLE"]``.
 
     n_processes : int, optional
         Number of multiprocessing workers. Default is ``5``.
@@ -727,7 +708,7 @@ def measure_spherex_flux(
     instead and open the files inside the worker function.
     """
 
-    pars = [(hdul, aperture_radius) for hdul in hduls]
+    pars = [(hdul, aperture_radius, flags_good) for hdul in hduls]
 
     with mp.Pool(processes=n_processes) as pool:
         results = pool.map(
@@ -736,7 +717,10 @@ def measure_spherex_flux(
             chunksize=chunk_size,
         )
 
-    return np.asarray(results) * u.mJy
+    flux = np.asarray( [res[0] for res in results] ) * u.mJy
+    good_photo = np.asarray( [res[1] for res in results] )
+    
+    return flux , good_photo
 
 
 def bin_spherex_flux(lam, flux, lam_bins_width=5*u.micrometer):
@@ -868,6 +852,7 @@ def extract_spectrum(combined_hdul,
                      n_processes = 5,
                      chunk_size = 5,
                      lam_bins_width = 0.1*u.micrometer,
+                     flags_good = None,
                      outdir = None,
                      outname = None,
                      savetable = False
@@ -906,6 +891,11 @@ def extract_spectrum(combined_hdul,
     lam_bins_width : `~astropy.units.Quantity`, optional
         Width of the wavelength bins used to construct the binned spectrum.
         Default is ``0.1*u.micrometer``.
+
+    flags_good : sequence of str, optional
+        Names of flags that are considered acceptable for photometry.
+        Any flag not included in this list will cause the aperture to be
+        rejected. Default is ``["SOURCE", "FULLSAMPLE"]``.
     
     outdir : str, optional
         Output directory for the extracted spectrum FITS file. Required if
@@ -926,9 +916,11 @@ def extract_spectrum(combined_hdul,
     
         - ``lam_int`` : wavelength of each observation.
         - ``flux_int`` : aperture flux in mJy.
+        - ``good`` : is True of there are no bad pixels in the aperture.
     
     tab2 : `~astropy.table.Table`
-        Table containing the binned spectrum with columns:
+        Table containing the binned spectrum with columns (only
+        flux measurements with `good=True`:
     
         - ``lam_bin`` : median wavelength of each bin.
         - ``flux_bin`` : median sigma-clipped flux in each bin.
@@ -960,15 +952,16 @@ def extract_spectrum(combined_hdul,
 
     ## Measure Photometry
     lam = summary_table["central_wavelength"].to(u.micrometer)
-    flux = measure_spherex_flux(HDULS , aperture_radius, n_processes, chunk_size)
+    flux, good_photo = measure_spherex_flux(HDULS , aperture_radius, flags_good, n_processes, chunk_size)
 
-    ## Bin Flux/Lambda
-    lam_bin, lamerr_bin, flux_bin , fluxerr_bin = bin_spherex_flux(lam = lam,
-                                                           flux = flux ,
+    ## Bin Flux/Lambda (only good photometry)
+    sel_good = np.where(good_photo)[0]
+    lam_bin, lamerr_bin, flux_bin , fluxerr_bin = bin_spherex_flux(lam = lam[sel_good],
+                                                           flux = flux[sel_good] ,
                                                            lam_bins_width = lam_bins_width)
 
     ## Combine in table
-    tab1 = Table([lam,flux], names=["lam_int","flux_int"])
+    tab1 = Table([lam,flux,good_photo], names=["lam_int","flux_int","good"])
     tab2 = Table([lam_bin,flux_bin, lamerr_bin, fluxerr_bin], names=["lam_bin","flux_bin","lamerr_bin","fluxerr_bin"])
 
 
@@ -988,3 +981,158 @@ def extract_spectrum(combined_hdul,
         hdul.writeto(fn_out, overwrite=True)
     
     return(tab1, tab2)
+
+
+def decompose_flags(flag):
+    """
+    Decompose an integer bitmask into the set bit numbers.
+
+    Parameters
+    ----------
+    flag : int
+        Integer bitmask.
+
+    Returns
+    -------
+    bits : list of int
+        List of bit numbers (0-indexed) that are set.
+
+    Examples
+    --------
+    >>> decompose_flags(2097152)
+    [21]
+
+    >>> decompose_flags(2097154)
+    [1, 21]
+
+    >>> decompose_flags(13)
+    [0, 2, 3]
+    """
+    flag = int(flag)
+    return [i for i in range(flag.bit_length()) if flag & (1 << i)]
+
+
+def load_flag_info():
+    """
+    Loads the flag information.
+    See Explanatory Supplement: https://irsa.ipac.caltech.edu/data/SPHEREx/docs/SPHEREx_Expsupp_QR.pdf
+    """
+    
+    flags = [
+        ("TRANSIENT", 0),
+        ("OVERFLOW", 1),
+        ("SUR_ERROR", 2),
+        ("NONFUNC", 6),
+        ("DICHROIC", 7),
+        ("MISSING_DATA", 9),
+        ("HOT", 10),
+        ("COLD", 11),
+        ("FULLSAMPLE", 12),
+        ("PHANMISS", 14),
+        ("NONLINEAR", 15),
+        ("PERSIST", 17),
+        ("OUTLIER", 19),
+        ("SOURCE", 21),
+        ("GHOST", 22),
+        ("GHOST_EXT", 24),
+        ("BLOOM", 26),
+        ("SNOWBALL", 27),
+        ("HALO", 28),
+        ("SATELLITE_HALO", 29),
+    ]
+    
+    flag_info = Table(
+        rows=flags,
+        names=["flag", "bit"]
+    )
+    
+    return(flag_info)
+    
+
+def check_flags(flag_image, size=2*u.pix, flags_good=None):
+    """
+    Check whether an aperture contains pixels with undesirable flags.
+
+    The function evaluates the flags within a circular aperture centered on
+    the middle of a flag image. Pixels are considered acceptable if all of
+    their set flag bits correspond to flags listed in ``flags_good``. All
+    other flags are treated as bad.
+
+    Parameters
+    ----------
+    flag_image : ndarray
+        2D integer flag image where each pixel value is a bit mask encoding
+        one or more flag conditions.
+
+    size : int, float, or `~astropy.units.Quantity`, optional
+        Diameter of the circular aperture. If a scalar is provided, it is
+        interpreted as a size in pixels. Default is ``2*u.pixel``.
+
+    flags_good : sequence of str, optional
+        Names of flags that are considered acceptable for photometry.
+        Any flag not included in this list will cause the aperture to be
+        rejected. Default is ``["SOURCE", "FULLSAMPLE"]``.
+
+    Returns
+    -------
+    bool
+        ``True`` if no bad flags are present within the aperture and the
+        region is considered safe for photometry. ``False`` otherwise.
+
+    Notes
+    -----
+    The flag image is interpreted as a bit mask. If a pixel contains
+    multiple flags, all set bits are decomposed and checked individually.
+
+    The aperture is centered on the central pixel of ``flag_image`` and is
+    intended to match the aperture used for photometry.
+    """
+
+    if flags_good is None:
+        flags_good = ["SOURCE", "FULLSAMPLE"]
+
+    if not isinstance(size, u.Quantity):
+        if np.isscalar(size):
+            size = size * u.pixel
+        else:
+            raise TypeError(
+                "size must be either a scalar (interpreted as pixels) "
+                "or an astropy.units.Quantity."
+            )
+
+    # load flag info
+    flag_info = load_flag_info()
+
+    # Get flags not allowed for photometry
+    flags_bad = [
+        f for f in flag_info["flag"].data
+        if f not in flags_good
+    ]
+
+    # Create aperture mask
+    aper = CircularAperture(
+        [flag_image.shape[1] // 2, flag_image.shape[0] // 2],
+        size.to_value(u.pix),
+    )
+
+    mask = aper.to_mask(method="center").to_image(flag_image.shape)
+
+    # Extract unique flags in aperture
+    flags_unique = np.unique(flag_image[mask == 1])
+
+    # Decompose into individual bits
+    flag_bits = [
+        decompose_flags(f)
+        for f in flags_unique
+    ]
+
+    flag_bits_unique = sorted(set().union(*flag_bits))
+
+    # Convert bits to flag names
+    flag_names = [
+        flag_info[flag_info["bit"] == b]["flag"][0]
+        for b in flag_bits_unique
+    ]
+
+    # Check for bad flags
+    return not any(flag in flags_bad for flag in flag_names)
