@@ -4,11 +4,11 @@ jupytext:
     extension: .md
     format_name: myst
     format_version: 0.13
-    jupytext_version: 1.19.5
+    jupytext_version: 1.18.1
 kernelspec:
-  display_name: python3
-  language: python
   name: python3
+  display_name: Python 3 (ipykernel)
+  language: python
 ---
 
 ```{code-cell} ipython3
@@ -21,6 +21,7 @@ import os
 import sys
 import time
 import importlib
+from tqdm import tqdm
 
 import numpy as np
 
@@ -44,13 +45,13 @@ importlib.reload(ssp)
 INPUT = dict()
 
 ## Calibration Star
-#INPUT["target_name"] = "2MASS 21282814-0559310"
-#INPUT["RA"] = 322.117265*u.degree
-#INPUT["DEC"] = -5.991964*u.degree
-#INPUT["tmpdir"] = "../tmp/"
-#INPUT["outdir"] = "../output/"
-#INPUT["cutout_size"] = 11*u.pix
-#INPUT["aperture_radius"] = 3*u.pix
+INPUT["target_name"] = "2MASS 21282814-0559310"
+INPUT["RA"] = 322.117265*u.degree
+INPUT["DEC"] = -5.991964*u.degree
+INPUT["tmpdir"] = "../tmp/"
+INPUT["outdir"] = "../output/"
+INPUT["cutout_size"] = 11*u.pix
+INPUT["aperture_radius"] = 3*u.pix
 
 ## Deep Field Source
 #INPUT["target_name"] = "DESI-39633458741381032"
@@ -71,13 +72,13 @@ INPUT = dict()
 #INPUT["aperture_radius"] = 3*u.pix
 
 ## Galaxy
-INPUT["target_name"] = "DESI-39627409825203277"
-INPUT["RA"] = 65.912846*u.degree
-INPUT["DEC"] = -15.718582*u.degree
-INPUT["tmpdir"] = "../tmp/"
-INPUT["outdir"] = "../output/"
-INPUT["cutout_size"] = 11*u.pixel
-INPUT["aperture_radius"] = 3*u.pix
+#INPUT["target_name"] = "DESI-39627409825203277"
+#INPUT["RA"] = 65.912846*u.degree
+#INPUT["DEC"] = -15.718582*u.degree
+#INPUT["tmpdir"] = "../tmp/"
+#INPUT["outdir"] = "../output/"
+#INPUT["cutout_size"] = 11*u.pixel
+#INPUT["aperture_radius"] = 3*u.pix
 ```
 
 ```{code-cell} ipython3
@@ -126,7 +127,12 @@ if REPO == "IRSA":
             )
             for row in lvf_results
         ]
-        concurrent.futures.wait(futures)
+        for future in tqdm(
+            concurrent.futures.as_completed(futures),
+            total=len(futures),
+            desc="Processing cutouts"
+        ):
+            future.result()
     print(f"Done (IRSA) - time to create {len(lvf_results)} cutouts in parallel mode:  {np.round((time.time()-t1)/60,2)} minutes (= {np.round(((time.time()-t1))/len(lvf_results),2)}s/image).")
     print(f"Number of failed downloads: {len(np.where( lvf_results["hdus"] == None)[0])}")
 
@@ -149,7 +155,12 @@ if REPO == "CLOUD":
             )
             for row in lvf_results
         ]
-        concurrent.futures.wait(futures)
+        for future in tqdm(
+            concurrent.futures.as_completed(futures),
+            total=len(futures),
+            desc="Processing cutouts"
+        ):
+            future.result()
     print(f"Done - time to create {len(lvf_results)} cutouts in parallel mode:  {np.round((time.time()-t1)/60,2)} minutes (= {np.round(((time.time()-t1))/len(lvf_results),2)}s/image).")
 ```
 

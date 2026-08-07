@@ -3,6 +3,7 @@ import os
 import time
 import posixpath
 from io import StringIO
+from tqdm import tqdm
 
 import numpy as np
 
@@ -711,10 +712,16 @@ def measure_spherex_flux(
     pars = [(hdul, aperture_radius, flags_good) for hdul in hduls]
 
     with mp.Pool(processes=n_processes) as pool:
-        results = pool.map(
-            measure_spherex_flux_helper,
-            pars,
-            chunksize=chunk_size,
+        results = list(
+            tqdm(
+                pool.imap(
+                    measure_spherex_flux_helper,
+                    pars,
+                    chunksize=chunk_size,
+                ),
+                total=len(pars),
+                desc="Measuring flux"
+            )
         )
 
     flux = np.asarray( [res[0] for res in results] ) * u.mJy
