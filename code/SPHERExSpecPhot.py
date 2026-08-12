@@ -6,7 +6,7 @@ from io import StringIO
 from tqdm import tqdm
 
 import numpy as np
-
+import pickle
 from astropy.io import fits
 from astropy.table import Table
 from astropy.wcs import WCS
@@ -16,6 +16,7 @@ from astropy.nddata import Cutout2D
 from astropy.stats import sigma_clipped_stats, sigma_clip, SigmaClip
 
 import pyvo
+import fsspec
 
 from photutils.aperture import CircularAperture, CircularAnnulus, aperture_photometry, ApertureStats
 
@@ -173,6 +174,265 @@ def tap_search(adql, maxrec=None, retries=3, delay=5, IRSA_TAP_URL="https://irsa
                 _time.sleep(delay)
             else:
                 raise
+
+
+def obsid_from_filename(filename):
+    """
+    Extract the observation ID from a SPHEREx L2 filename. 
+    Intended for converting IRSA image names to local L2 images by matching obsid.
+
+    Filenames split as ``level2_<obsid>_spx_<processing_version>.fits``. The
+    processing version differs between releases, so the observation ID is the
+    only safe key for matching archive records against local files.
+
+    Parameters
+    ----------
+    filename : str
+        L2 filename, or any URI/path ending in one.
+
+    Returns
+    -------
+    str
+        Observation ID: week tag, exposure number and detector token.
+
+    Examples
+    --------
+    obsid_from_filename("level2_2025W17_4B_0035_3D1_spx_l2b-v26-2026-196.fits") returns 
+    '2025W17_4B_0035_3D1'
+    """
+    stem = os.path.basename(filename).split("_spx_")[0]
+    return(stem[len("level2_"):] if stem.startswith("level2_") else stem)
+
+
+def build_local_index(root, cache=None, rebuild=False, verbose=True):
+    """
+    Index a local SPHEREx L2 directory by observation ID.
+
+    The archive is laid out as
+    ``<root>/<week_tag>/<version>/<detector>/level2_<obsid>_spx_<version>.fits``.
+    Because the processing version appears in both the directory and the
+    filename, and differs between releases, local files cannot be located by
+    joining an archive URI onto a local root. This walks the directly tree once and
+    builds a lookup keyed on the stable observation ID.
+
+    The walk costs one directory read per detector directory (a few hundred in
+    total), not one stat per file, so it is cheap enough for a login node.
+
+    Parameters
+    ----------
+    root : str
+        Top of the local L2 tree, i.e. the directory containing the week tags.
+    cache : str, optional
+        Path to a pickle. Loaded if it exists, otherwise written after the walk.
+    rebuild : bool, optional
+        Ignore an existing cache and walk again. Default `False`.
+    verbose : bool, optional
+        Print progress and totals. Default `True`.
+
+    Returns
+    -------
+    dict
+        Observation ID -> list of full paths. An observation appears more than
+        once when it exists in both a nominal and a retry directory.
+    """
+    if cache is not None and os.path.exists(cache) and not rebuild:
+        with open(cache, "rb") as fh:
+            index = pickle.load(fh)
+        if verbose:
+            print(f"Loaded index of {len(index)} observations from {cache}")
+        return(index)
+
+    index = {}
+    weeks = [d for d in os.scandir(root) if d.is_dir()]
+
+    for week in tqdm(weeks, desc="Indexing L2 directory tree", disable=not verbose):
+        for version in os.scandir(week.path):
+            if not version.is_dir():
+                continue
+            for detector in os.scandir(version.path):
+                if not detector.is_dir():
+                    continue
+                for entry in os.scandir(detector.path):
+                    if entry.name.endswith(".fits"):
+                        index.setdefault(
+                            obsid_from_filename(entry.name), []
+                        ).append(entry.path)
+
+    if verbose:
+        n_files = sum(len(v) for v in index.values())
+        print(f"Indexed {len(index)} observations ({n_files} files) under {root}")
+
+    if cache is not None:
+        with open(cache, "wb") as fh:
+            pickle.dump(index, fh)
+        if verbose:
+            print(f"Wrote {cache}")
+
+    return(index)
+
+
+def resolve_local_paths(results, index, uri_key="uri", out_key="local_path",
+                        prefer_retry=True, verbose=True):
+    """
+    Attach local file paths to a table of archive records.
+
+    Matches each record's observation ID against an index from
+    `build_local_index`. Records with no local counterpart get an empty string
+    and must be filtered out before making cutouts.
+
+    Parameters
+    ----------
+    results : `~astropy.table.Table`
+        Archive records, e.g. from `search_lvfs`.
+    index : dict
+        Index from `build_local_index`.
+    uri_key : str, optional
+        Column holding the archive URI or filename. Default ``"uri"``.
+    out_key : str, optional
+        Column to add. Default ``"local_path"``.
+    prefer_retry : bool, optional
+        When an observation exists in both a nominal and a retry directory,
+        take the retry version. Default `True`.
+    verbose : bool, optional
+        Report the resolution rate. Default `True`.
+
+    Returns
+    -------
+    results : `~astropy.table.Table`
+        Input table with ``out_key`` added.
+    n_missing : int
+        Number of records with no local file.
+    """
+    if prefer_retry:
+        sort_key = lambda p: ("_retry" not in p, p)
+    else:
+        sort_key = lambda p: ("_retry" in p, p)
+
+    paths = []
+    n_missing = 0
+
+    # list of image names from search_lvf, convert to local l2 filenames.
+    for row in results:
+        hits = index.get(obsid_from_filename(row[uri_key]), [])
+        if not hits:
+            n_missing += 1
+            paths.append("")
+            continue
+        if len(hits) > 1:
+            hits = sorted(hits, key=sort_key)
+        paths.append(hits[0])
+
+    results[out_key] = paths
+
+    if verbose:
+        n = len(results)
+        print(f"Resolved {n - n_missing}/{n} records to local files "
+              f"({100*(n - n_missing)/max(n, 1):.1f}%)")
+
+    return(results, n_missing)
+
+
+def process_cutout_local(row, position, size=11*u.pixel, keys=None,
+                         uri_key="local_path", local_root=None, quiet=True):
+    """
+    Download-free version of `process_cutout_s3`: cut a stamp from an L2 image
+    already on local disk.
+
+    Fills ``hdus``, ``central_wavelength`` and ``bandwidth`` in the row, exactly
+    as the archive-backed cutout functions do, so everything downstream is
+    unchanged.
+
+    Parameters
+    ----------
+    row : dict-like
+        Mutable table row, updated in place.
+    position : `~astropy.coordinates.SkyCoord`
+        Sky position of the cutout centre.
+    size : int, float, or `~astropy.units.Quantity`, optional
+        Cutout size; scalars are pixels. Default ``11*u.pixel``.
+    keys : sequence of str, optional
+        Extensions to cut; must include ``"IMAGE"``.
+        Default ``["IMAGE", "FLAGS", "VARIANCE"]``.
+    uri_key : str, optional
+        Column holding the frame location. Default ``"local_path"``.
+    local_root : str, optional
+        If given, prepended to the value in ``uri_key``. Any ``s3://bucket/``
+        prefix is stripped first.
+    quiet : bool, optional
+        If False, print why a frame was rejected. Default `True`.
+
+    Returns
+    -------
+    bool
+        True on success, False if the frame was unreadable or off-frame.
+    """
+
+    # Allow a scalar to be interpreted as pixels.
+    if not isinstance(size, u.Quantity):
+        if np.isscalar(size):
+            size = size * u.pixel
+        else:
+            raise TypeError(
+                "size must be either a scalar (interpreted as pixels) "
+                "or an astropy.units.Quantity."
+            )
+
+    # Check if image is in keys:
+    if keys is None:
+        keys = ["IMAGE", "FLAGS", "VARIANCE"]
+    if "IMAGE" not in keys:
+        raise KeyError(
+            "`IMAGE` must be included in the keys"
+        )
+
+    ## Resolve the location on disk
+    path = row[uri_key]
+    if path.startswith("s3://"):
+        path = "/".join(path.split("/")[3:])      # drop 's3://bucket/'
+    if local_root is not None:
+        path = os.path.join(local_root, path)
+
+    ## Extract cutout safely
+    try:
+        with fits.open(path, memmap=True) as hdul:
+
+            spatial_wcs = WCS(hdul["IMAGE"].header)
+            hdus = []
+
+            for key in keys:
+                cutout = Cutout2D(
+                    hdul[key].data,       # memmap-backed: only the stamp is paged in
+                    position=position,
+                    size=size,
+                    wcs=spatial_wcs,
+                    mode="partial",
+                    fill_value=0.0,
+                    copy=True,            # REQUIRED: detach before the file closes
+                )
+
+                hdu = fits.PrimaryHDU(data=cutout.data, header=hdul[key].header)
+                hdu.header.update(cutout.wcs.to_header())
+                hdu.header["EXTNAME"] = f"{hdu.header['EXTNAME']}{row['cutout_index']}"
+                hdus.append(hdu)
+
+            row["hdus"] = hdus
+
+            x, y = spatial_wcs.world_to_pixel(position)
+
+            spectral_wcs = WCS(hdul["IMAGE"].header, fobj=hdul, key="W")
+            spectral_wcs.sip = None
+            wavelength, bandpass = spectral_wcs.pixel_to_world(x, y)
+
+            row["central_wavelength"] = wavelength.to(u.um).value
+            row["bandwidth"] = bandpass.to(u.um).value
+
+    except Exception as exc:
+        if not quiet:
+            print(f"Failed to process {path}: {exc}")
+        return(False)
+
+    return(True)
+
 
 
 def process_cutout_s3(row, position, size=11*u.pixel, keys=None, cache=False, uri_key="s3_uri",fs=None):
