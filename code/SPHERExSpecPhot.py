@@ -448,7 +448,7 @@ def process_cutout_irsa(row, position, size=60*u.arcsec, keys=None, NTRIES=5, SL
             c += 1
             
 
-    print(f"Failed to process {uri}: {e}")
+    print(f"Failed to process {uri}.")
     return(False)
 
 

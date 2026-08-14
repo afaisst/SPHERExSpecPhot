@@ -4,10 +4,10 @@ jupytext:
     extension: .md
     format_name: myst
     format_version: 0.13
-    jupytext_version: 1.19.5
+    jupytext_version: 1.18.1
 kernelspec:
   name: python3
-  display_name: python3
+  display_name: Python 3 (ipykernel)
   language: python
 ---
 
@@ -97,14 +97,34 @@ INPUT = dict()
 
 
 ## T3 Star
-INPUT["target_name"] = "PSO J247.3273+03.5932"
-INPUT["RA"] = 247.3283227*u.degree
-INPUT["DEC"] = 3.5925909*u.degree
-INPUT["tmpdir"] = "../tmp/"
-INPUT["outdir"] = "../output/"
-INPUT["cutout_size"] = 11*u.pix
-INPUT["aperture_radius"] = 2*u.pix
-INPUT["annulus_width"] = 3*u.pix
+#INPUT["target_name"] = "PSO J247.3273+03.5932"
+#INPUT["RA"] = 247.3283227*u.degree
+#INPUT["DEC"] = 3.5925909*u.degree
+#INPUT["tmpdir"] = "../tmp/"
+#INPUT["outdir"] = "../output/"
+#INPUT["cutout_size"] = 11*u.pix
+#INPUT["aperture_radius"] = 2*u.pix
+#INPUT["annulus_width"] = 3*u.pix
+
+## z = 6 Quasar
+#INPUT["target_name"] = "PSO J002.1073–06.4345"
+#INPUT["RA"] = 2.10737*u.degree
+#INPUT["DEC"] = -6.43457 *u.degree
+#INPUT["tmpdir"] = "../tmp/"
+#INPUT["outdir"] = "../output/"
+#INPUT["cutout_size"] = 11*u.pix
+#INPUT["aperture_radius"] = 3*u.pix
+#INPUT["annulus_width"] = 3*u.pix
+
+## I ZW 18
+#INPUT["target_name"] = "I ZW 18"
+#INPUT["RA"] = 143.50845*u.degree
+#INPUT["DEC"] = 55.24107*u.degree
+#INPUT["tmpdir"] = "../tmp/"
+#INPUT["outdir"] = "../output/"
+#INPUT["cutout_size"] = 11*u.pix
+#INPUT["aperture_radius"] = 2*u.pix
+#INPUT["annulus_width"] = 3*u.pix
 ```
 
 ```{code-cell} ipython3
