@@ -639,7 +639,8 @@ def measure_spherex_flux_helper(pars):
     img = img * 1e3  # Jy/px -> mJy/px
 
     ## Measure aperture flux
-    positions = [(img.shape[1] / 2, img.shape[0] / 2)]
+    positions = [(img.shape[1] // 2, img.shape[0] // 2)]     # was  / 2
+
 
     ## Simple background estimate
     mean, median, stddev = sigma_clipped_stats(
