@@ -4,10 +4,10 @@ jupytext:
     extension: .md
     format_name: myst
     format_version: 0.13
-    jupytext_version: 1.18.1
+    jupytext_version: 1.19.5
 kernelspec:
   name: python3
-  display_name: Python 3 (ipykernel)
+  display_name: python3
   language: python
 ---
 
@@ -73,6 +73,18 @@ INPUT = dict()
 #INPUT["cutout_size"] = 11*u.pixel
 #INPUT["aperture_radius"] = 3*u.pix
 #INPUT["annulus_width"] = 3*u.pix
+
+
+
+## Star
+INPUT["target_name"] = "J085319.65-430211.7"
+INPUT["RA"] = 133.33187*u.degree
+INPUT["DEC"] = -43.03658 *u.degree
+INPUT["tmpdir"] = "../tmp/"
+INPUT["outdir"] = "../output/"
+INPUT["cutout_size"] = 11*u.pixel
+INPUT["aperture_radius"] = 1.5*u.pix
+INPUT["annulus_width"] = 3*u.pix
 
 ## Galaxy
 #INPUT["target_name"] = "DESI-39627409825203277"
